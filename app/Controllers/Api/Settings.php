@@ -4,6 +4,7 @@ namespace App\Controllers\Api;
 
 use App\Controllers\BaseController;
 use App\Models\SettingModel;
+use Throwable;
 
 class Settings extends BaseController
 {
@@ -41,28 +42,42 @@ class Settings extends BaseController
 
     public function uploadLogo()
     {
+        if (! (bool) ini_get('file_uploads')) {
+            return $this->uploadError('Upload file sedang nonaktif di konfigurasi PHP.', 'Aktifkan file_uploads di php.ini/server panel.');
+        }
+
         $file = $this->request->getFile('logo');
 
-        if (! $file || ! $file->isValid()) {
-            return $this->response->setStatusCode(422)->setJSON(['message' => 'File logo wajib dipilih.']);
+        if (! $file) {
+            return $this->uploadError('File logo wajib dipilih.');
+        }
+
+        if (! $file->isValid()) {
+            return $this->uploadError($this->uploadFailureMessage($file->getError()), $file->getErrorString());
         }
 
         if ($file->getSize() > 2 * 1024 * 1024) {
-            return $this->response->setStatusCode(422)->setJSON(['message' => 'Ukuran logo maksimal 2 MB.']);
+            return $this->uploadError('Ukuran logo maksimal 2 MB.', 'Ukuran file terdeteksi: ' . number_format($file->getSize() / 1024 / 1024, 2) . ' MB.');
         }
 
         $allowedMimes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
         if (! in_array($file->getMimeType(), $allowedMimes, true)) {
-            return $this->response->setStatusCode(422)->setJSON(['message' => 'Logo harus berupa PNG, JPG, WEBP, atau GIF.']);
+            return $this->uploadError('Logo harus berupa PNG, JPG, WEBP, atau GIF.', 'MIME terdeteksi: ' . ($file->getMimeType() ?: 'tidak diketahui') . '.');
         }
 
         if (@getimagesize($file->getTempName()) === false) {
-            return $this->response->setStatusCode(422)->setJSON(['message' => 'File logo tidak valid.']);
+            return $this->uploadError('File logo tidak valid.', 'File tidak terbaca sebagai gambar valid.');
         }
 
         $directory = FCPATH . 'uploads/logos';
         if (! is_dir($directory)) {
-            mkdir($directory, 0755, true);
+            if (! @mkdir($directory, 0755, true) && ! is_dir($directory)) {
+                return $this->uploadError('Folder upload logo gagal dibuat.', 'Pastikan folder public/uploads bisa ditulis oleh web server.');
+            }
+        }
+
+        if (! is_writable($directory)) {
+            return $this->uploadError('Folder upload logo tidak bisa ditulis.', 'Jalankan chmod/chown untuk public/uploads/logos agar bisa ditulis oleh web server.');
         }
 
         $model   = new SettingModel();
@@ -75,7 +90,15 @@ class Settings extends BaseController
         ];
         $name = 'logo-' . bin2hex(random_bytes(8)) . '.' . $extensions[$file->getMimeType()];
 
-        $file->move($directory, $name);
+        try {
+            $file->move($directory, $name);
+        } catch (Throwable $exception) {
+            return $this->uploadError('Logo gagal disimpan ke server.', $exception->getMessage(), 500);
+        }
+
+        if (! is_file($directory . DIRECTORY_SEPARATOR . $name)) {
+            return $this->uploadError('Logo gagal disimpan ke server.', 'File tujuan tidak ditemukan setelah proses upload.', 500);
+        }
 
         $data = ['logo_path' => 'uploads/logos/' . $name];
         if ($setting) {
@@ -93,6 +116,27 @@ class Settings extends BaseController
             'message' => 'Logo berhasil diperbarui.',
             'data'    => $this->settingPayload($model->first() ?? []),
         ]);
+    }
+
+    private function uploadError(string $message, ?string $detail = null, int $status = 422)
+    {
+        return $this->response->setStatusCode($status)->setJSON([
+            'message' => $message,
+            'detail'  => $detail,
+        ]);
+    }
+
+    private function uploadFailureMessage(int $error): string
+    {
+        return match ($error) {
+            UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE => 'Ukuran logo melebihi batas upload server.',
+            UPLOAD_ERR_PARTIAL => 'Logo hanya terupload sebagian. Coba upload ulang.',
+            UPLOAD_ERR_NO_FILE => 'File logo wajib dipilih.',
+            UPLOAD_ERR_NO_TMP_DIR => 'Folder temporary upload PHP tidak tersedia.',
+            UPLOAD_ERR_CANT_WRITE => 'Server gagal menulis file upload.',
+            UPLOAD_ERR_EXTENSION => 'Upload dihentikan oleh extension PHP.',
+            default => 'Logo gagal diupload.',
+        };
     }
 
     public function deleteLogo()

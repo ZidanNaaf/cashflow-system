@@ -864,7 +864,10 @@ createApp({
                 });
                 const result = await response.json().catch(() => ({}));
                 if (!response.ok) {
-                    throw new Error(result.message || 'Logo gagal diupload.');
+                    const error = new Error(result.message || `Logo gagal diupload. Server memberi status ${response.status}.`);
+                    error.detail = result.detail || null;
+                    error.status = response.status;
+                    throw error;
                 }
 
                 this.setting = result.data;
@@ -872,7 +875,12 @@ createApp({
                 this.$refs.logoInput.value = '';
                 Swal.fire({ icon: 'success', title: 'Berhasil', text: result.message });
             } catch (error) {
-                Swal.fire({ icon: 'error', title: 'Gagal', text: error.message });
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Upload logo gagal',
+                    text: error.message || 'Terjadi kesalahan saat upload logo.',
+                    footer: error.detail ? `<span class="text-left text-xs text-slate-500">${error.detail}</span>` : undefined
+                });
             }
         },
         async deleteLogo() {
